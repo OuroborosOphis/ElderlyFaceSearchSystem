@@ -1,0 +1,787 @@
+import os
+import time
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+import tkinter as tk
+from tkinter import filedialog, Label, Button
+from PIL import ImageTk
+
+class ElderlyFaceRecognitionSystem:
+    def __init__(self, data_dir='dataset'):
+        """
+        Khởi tạo hệ thống nhận dạng khuôn mặt người cao tuổi
+        
+        Args:
+            data_dir: Thư mục chứa dữ liệu ảnh
+        """
+        self.data_dir = data_dir
+        self.image_size = (224, 224)  # Kích thước chuẩn cho ảnh
+        self.face_features_db = []  # Cơ sở dữ liệu lưu trữ đặc trưng
+        self.images_paths = []  # Đường dẫn đến ảnh
+        
+        # Tạo thư mục nếu chưa tồn tại
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+            
+        # Load dữ liệu ảnh và trích xuất đặc trưng
+        self.load_database()
+    
+    def load_database(self):
+        """Tải dữ liệu ảnh và trích xuất đặc trưng"""
+        print("Đang tải dữ liệu và trích xuất đặc trưng...")
+        
+        # Duyệt qua tất cả các ảnh trong thư mục
+        for root, _, files in os.walk(self.data_dir):
+            for file in files:
+                if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    image_path = os.path.join(root, file)
+                    
+                    try:
+                        # Đọc ảnh
+                        img = cv2.imread(image_path)
+                        if img is None:
+                            continue
+                            
+                        # Tiền xử lý ảnh
+                        preprocessed_img = self.preprocess_image(img)
+                        
+                        # Trích xuất đặc trưng
+                        features = self.extract_features(preprocessed_img)
+                        
+                        # Lưu trữ đặc trưng và đường dẫn ảnh
+                        self.face_features_db.append(features)
+                        self.images_paths.append(image_path)
+                        
+                    except Exception as e:
+                        print(f"Lỗi khi xử lý ảnh {image_path}: {e}")
+        
+        print(f"Đã tải {len(self.face_features_db)} ảnh vào CSDL")
+    
+    def preprocess_image(self, image):
+        """
+        Tiền xử lý ảnh: phát hiện khuôn mặt, căn chỉnh và chuẩn hóa
+        
+        Args:
+            image: Ảnh đầu vào
+            
+        Returns:
+            Ảnh đã xử lý
+        """
+        # Chuyển đổi ảnh sang thang xám
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Phát hiện khuôn mặt sử dụng phương pháp Viola-Jones
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        
+        # Nếu không tìm thấy khuôn mặt, sử dụng toàn bộ ảnh
+        if len(faces) == 0:
+            resized = cv2.resize(image, self.image_size)
+            return resized
+        
+        # Lấy khuôn mặt lớn nhất
+        (x, y, w, h) = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)[0]
+        
+        # Mở rộng vùng khuôn mặt để đảm bảo chứa toàn bộ đặc trưng
+        face_region = image[max(0, y-30):min(image.shape[0], y+h+30), 
+                          max(0, x-30):min(image.shape[1], x+w+30)]
+        
+        # Chuyển đổi kích thước về kích thước chuẩn
+        resized = cv2.resize(face_region, self.image_size)
+        
+        return resized
+    
+    def extract_features(self, image):
+        """
+        Trích xuất các đặc trưng từ ảnh khuôn mặt
+        
+        Args:
+            image: Ảnh khuôn mặt đã xử lý
+            
+        Returns:
+            Vector đặc trưng
+        """
+        # Chuyển đổi ảnh sang thang xám để trích xuất đặc trưng kết cấu
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # 1. Trích xuất đặc trưng LBP
+        lbp_features = self.extract_lbp_features(gray)
+        
+        # 2. Trích xuất đặc trưng dựa trên Gabor
+        gabor_features = self.extract_gabor_features(gray)
+        
+        # 3. Trích xuất đặc trưng dựa trên màu sắc
+        color_features = self.extract_color_features(image)
+        
+        # 4. Trích xuất đặc trưng hình dạng
+        # shape_features = self.extract_shape_features(gray)
+        
+        # Kết hợp các đặc trưng
+        combined_features = np.concatenate((
+            lbp_features, 
+            gabor_features, 
+            color_features, 
+            # shape_features
+        ))
+        
+        # Chuẩn hóa vector đặc trưng
+        norm = np.linalg.norm(combined_features)
+        if norm > 0:
+            combined_features = combined_features / norm
+        
+        return combined_features
+    
+    def extract_lbp_features(self, gray_image):
+        """
+        Trích xuất đặc trưng LBP (Local Binary Patterns)
+        
+        Args:
+            gray_image: Ảnh thang xám
+            
+        Returns:
+            Vector đặc trưng LBP
+        """
+        # Chia ảnh thành 4x4 vùng
+        h, w = gray_image.shape
+        cell_h, cell_w = h // 4, w // 4
+        
+        lbp_histograms = []
+        
+        # Với mỗi vùng, tính toán LBP và histogram
+        for i in range(4):
+            for j in range(4):
+                # Vùng hiện tại
+                cell = gray_image[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+                
+                # Tính toán LBP thủ công
+                lbp = np.zeros_like(cell)
+                for y in range(1, cell.shape[0]-1):
+                    for x in range(1, cell.shape[1]-1):
+                        center = cell[y, x]
+                        code = 0
+                        
+                        # So sánh với 8 pixel lân cận
+                        code |= (cell[y-1, x-1] >= center) << 7
+                        code |= (cell[y-1, x] >= center) << 6
+                        code |= (cell[y-1, x+1] >= center) << 5
+                        code |= (cell[y, x+1] >= center) << 4
+                        code |= (cell[y+1, x+1] >= center) << 3
+                        code |= (cell[y+1, x] >= center) << 2
+                        code |= (cell[y+1, x-1] >= center) << 1
+                        code |= (cell[y, x-1] >= center) << 0
+                        
+                        lbp[y, x] = code
+                
+                # Tính histogram của LBP
+                hist, _ = np.histogram(lbp.ravel(), bins=256, range=(0, 256))
+                
+                # Chuẩn hóa histogram
+                if np.sum(hist) > 0:
+                    hist = hist / np.sum(hist)
+                
+                lbp_histograms.append(hist)
+        
+        # Ghép nối các histogram
+        lbp_features = np.concatenate(lbp_histograms)
+        
+        # Giảm chiều dữ liệu để vector không quá lớn
+        # Chỉ lấy 10 giá trị đầu tiên của mỗi histogram
+        lbp_features_reduced = np.array([hist[:10] for hist in lbp_histograms]).flatten()
+        
+        return lbp_features_reduced
+    
+    def extract_gabor_features(self, gray_image):
+        """
+        Trích xuất đặc trưng sử dụng bộ lọc Gabor
+        
+        Args:
+            gray_image: Ảnh thang xám
+            
+        Returns:
+            Vector đặc trưng Gabor
+        """
+        # Định nghĩa các tham số Gabor
+        orientations = [0, np.pi/4, np.pi/2, 3*np.pi/4]  # 4 hướng
+        sigmas = [1, 3]  # 2 độ rộng
+        frequencies = [0.1, 0.4]  # 2 tần số
+        
+        gabor_features = []
+        
+        # Xử lý từng vùng của ảnh
+        h, w = gray_image.shape
+        cell_h, cell_w = h // 2, w // 2
+        
+        for i in range(2):
+            for j in range(2):
+                cell = gray_image[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+                cell_features = []
+                
+                # Áp dụng bộ lọc Gabor với các tham số khác nhau
+                for theta in orientations:
+                    for sigma in sigmas:
+                        for frequency in frequencies:
+                            # Tạo kernel Gabor
+                            kernel_size = min(cell.shape[0]//2*2+1, 31)  # Đảm bảo kernel size lẻ và không quá lớn
+                            kernel = self.create_gabor_kernel(kernel_size, sigma, theta, frequency)
+                            
+                            # Áp dụng bộ lọc
+                            filtered = cv2.filter2D(cell.astype(np.float32), cv2.CV_32F, kernel)
+                            
+                            # Tính năng lượng trung bình
+                            energy = np.mean(np.abs(filtered))
+                            cell_features.append(energy)
+                
+                gabor_features.extend(cell_features)
+        
+        return np.array(gabor_features)
+    
+    def create_gabor_kernel(self, size, sigma, theta, frequency):
+        """
+        Tạo kernel Gabor
+        
+        Args:
+            size: Kích thước kernel
+            sigma: Độ rộng
+            theta: Hướng
+            frequency: Tần số
+            
+        Returns:
+            Kernel Gabor
+        """
+        # Tạo lưới tọa độ
+        half_size = size // 2
+        x, y = np.meshgrid(np.arange(-half_size, half_size + 1), np.arange(-half_size, half_size + 1))
+        
+        # Xoay lưới tọa độ
+        x_theta = x * np.cos(theta) + y * np.sin(theta)
+        y_theta = -x * np.sin(theta) + y * np.cos(theta)
+        
+        # Tính toán Gabor kernel
+        gb = np.exp(-.5 * (x_theta**2 + y_theta**2) / sigma**2) * np.cos(2 * np.pi * frequency * x_theta)
+        
+        # Chuẩn hóa kernel
+        if np.sum(gb) != 0:
+            gb = gb / np.sum(np.abs(gb))
+            
+        return gb
+    
+    def extract_color_features(self, image):
+        """
+        Trích xuất đặc trưng dựa trên màu sắc
+        
+        Args:
+            image: Ảnh màu
+            
+        Returns:
+            Vector đặc trưng màu sắc
+        """
+        # Chuyển đổi sang không gian màu HSV
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        
+        # Chia ảnh thành các vùng
+        h, w, _ = hsv.shape
+        
+        # Vùng trán
+        forehead = hsv[0:h//4, w//4:3*w//4]
+        
+        # Vùng mắt
+        eyes = hsv[h//4:h//2, w//4:3*w//4]
+        
+        # Vùng má
+        cheeks = hsv[h//2:3*h//4, w//4:3*w//4]
+        
+        # Vùng miệng/cằm
+        mouth_chin = hsv[3*h//4:h, w//4:3*w//4]
+        
+        # Vùng tóc (phần trên đầu)
+        hair = hsv[0:h//4, 0:w]
+        
+        # Tính histogram cho từng vùng
+        hist_forehead = self._calculate_color_histogram(forehead)
+        hist_eyes = self._calculate_color_histogram(eyes)
+        hist_cheeks = self._calculate_color_histogram(cheeks)
+        hist_mouth_chin = self._calculate_color_histogram(mouth_chin)
+        hist_hair = self._calculate_color_histogram(hair)
+        
+        # Các đặc trưng bổ sung
+        # Phát hiện tóc bạc (tỷ lệ pixel có độ bão hòa thấp và độ sáng cao trong vùng tóc)
+        hair_s = hair[:,:,1]
+        hair_v = hair[:,:,2]
+        gray_hair_ratio = np.sum((hair_s < 30) & (hair_v > 150)) / max(1, hair.size/3)
+        
+        # Phát hiện đốm nâu (tỷ lệ pixel có tông màu nâu trong vùng da)
+        brown_spots = np.sum(
+            (cheeks[:,:,0] > 10) & (cheeks[:,:,0] < 30) & 
+            (cheeks[:,:,1] > 50) & (cheeks[:,:,1] < 150) & 
+            (cheeks[:,:,2] > 50) & (cheeks[:,:,2] < 150)
+        ) / max(1, cheeks.size/3)
+        
+        # Kết hợp các đặc trưng màu sắc
+        color_features = np.concatenate((
+            hist_forehead[:5],  # Lấy 5 bin đầu tiên để giảm kích thước
+            hist_eyes[:5],
+            hist_cheeks[:5],
+            hist_mouth_chin[:5],
+            hist_hair[:5],
+            [gray_hair_ratio, brown_spots]
+        ))
+        
+        return color_features
+    
+    def _calculate_color_histogram(self, region, bins=8):
+        """
+        Tính histogram màu cho một vùng ảnh
+        
+        Args:
+            region: Vùng ảnh HSV
+            bins: Số lượng bins cho histogram
+            
+        Returns:
+            Histogram chuẩn hóa
+        """
+        if region.size == 0:
+            return np.zeros(bins)
+        
+        # Tính histogram cho kênh H (màu sắc)
+        hist = cv2.calcHist([region], [0], None, [bins], [0, 180])
+        
+        # Chuẩn hóa
+        hist = hist.flatten()
+        if np.sum(hist) > 0:
+            hist = hist / np.sum(hist)
+            
+        return hist
+    
+    def extract_shape_features(self, gray_image):
+        """
+        Trích xuất đặc trưng dựa trên hình dạng
+        
+        Args:
+            gray_image: Ảnh thang xám
+            
+        Returns:
+            Vector đặc trưng hình dạng
+        """
+        # Phát hiện các điểm đặc trưng trên khuôn mặt
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+        # nose_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_mcs_nose.xml')
+        mouth_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
+        
+        # Phát hiện khuôn mặt
+        faces = face_cascade.detectMultiScale(gray_image, 1.3, 5)
+        
+        # Nếu không tìm thấy khuôn mặt, trả về vector rỗng
+        if len(faces) == 0:
+            return np.zeros(10)
+        
+        # Lấy khuôn mặt lớn nhất
+        face_x, face_y, face_w, face_h = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)[0]
+        
+        # Phát hiện mắt trong vùng phía trên khuôn mặt
+        face_upper = gray_image[face_y:face_y+face_h//2, face_x:face_x+face_w]
+        eyes = eye_cascade.detectMultiScale(face_upper, 1.3, 5)
+        
+        # Phát hiện mũi trong vùng giữa khuôn mặt
+        # face_middle = gray_image[face_y+face_h//4:face_y+3*face_h//4, face_x:face_x+face_w]
+        # noses = nose_cascade.detectMultiScale(face_middle, 1.3, 5)
+        
+        # Phát hiện miệng trong vùng dưới khuôn mặt
+        face_lower = gray_image[face_y+face_h//2:face_y+face_h, face_x:face_x+face_w]
+        mouths = mouth_cascade.detectMultiScale(face_lower, 1.8, 11)
+        
+        # Tính toán các tỷ lệ
+        shape_features = []
+        
+        # Tỷ lệ chiều cao/chiều rộng khuôn mặt
+        face_ratio = face_h / max(1, face_w)
+        shape_features.append(face_ratio)
+        
+        # Độ tương phản trung bình (đo độ sâu của nếp nhăn)
+        gradient_x = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
+        gradient_y = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(gradient_x**2 + gradient_y**2)
+        avg_gradient = np.mean(gradient_magnitude)
+        shape_features.append(avg_gradient)
+        
+        # Vị trí tương đối của mắt, mũi, miệng nếu phát hiện được
+        if len(eyes) >= 2:
+            eyes = sorted(eyes, key=lambda e: e[0])
+            left_eye_x, left_eye_y, left_eye_w, left_eye_h = eyes[0]
+            right_eye_x, right_eye_y, right_eye_w, right_eye_h = eyes[1]
+            
+            # Khoảng cách giữa hai mắt
+            eye_distance = (right_eye_x - left_eye_x) / face_w
+            shape_features.append(eye_distance)
+            
+            # Diện tích mắt (có thể nhỏ hơn ở người cao tuổi)
+            eye_area_ratio = (left_eye_w * left_eye_h + right_eye_w * right_eye_h) / (face_w * face_h)
+            shape_features.append(eye_area_ratio)
+        else:
+            shape_features.extend([0, 0])  # Không phát hiện được mắt
+        
+        # if len(noses) > 0:
+        #     nose_x, nose_y, nose_w, nose_h = sorted(noses, key=lambda n: n[2] * n[3], reverse=True)[0]
+            
+        #     # Vị trí tương đối của mũi
+        #     nose_position = (nose_y + nose_h/2) / face_h
+        #     shape_features.append(nose_position)
+        # else:
+        #     shape_features.append(0.5)  # Giá trị mặc định
+        
+        if len(mouths) > 0:
+            mouth_x, mouth_y, mouth_w, mouth_h = sorted(mouths, key=lambda m: m[2] * m[3], reverse=True)[0]
+            
+            # Vị trí tương đối của miệng
+            mouth_position = (mouth_y + face_h//2) / face_h
+            shape_features.append(mouth_position)
+            
+            # Chiều rộng miệng so với khuôn mặt
+            mouth_width_ratio = mouth_w / face_w
+            shape_features.append(mouth_width_ratio)
+        else:
+            shape_features.extend([0.7, 0.5])  # Giá trị mặc định
+        
+        # Phân tích nếp nhăn bằng cách tính gradient cục bộ trong các vùng quan tâm
+        
+        # Vùng trán
+        forehead = gray_image[face_y:face_y+face_h//4, face_x:face_x+face_w]
+        forehead_gradient = np.mean(cv2.Sobel(forehead, cv2.CV_64F, 0, 1, ksize=3))
+        shape_features.append(forehead_gradient)
+        
+        # Vùng quanh mắt
+        eye_region = gray_image[face_y+face_h//4:face_y+face_h//2, face_x:face_x+face_w]
+        eye_region_gradient = np.mean(cv2.Sobel(eye_region, cv2.CV_64F, 1, 1, ksize=3))
+        shape_features.append(eye_region_gradient)
+        
+        # Vùng quanh miệng
+        mouth_region = gray_image[face_y+2*face_h//3:face_y+face_h, face_x:face_x+face_w]
+        mouth_region_gradient = np.mean(cv2.Sobel(mouth_region, cv2.CV_64F, 1, 1, ksize=3))
+        shape_features.append(mouth_region_gradient)
+        
+        return np.array(shape_features)
+    
+    def search_similar_faces(self, query_image, top_k=3):
+        """
+        Tìm kiếm ảnh mặt người cao tuổi tương tự
+        
+        Args:
+            query_image: Ảnh đầu vào
+            top_k: Số lượng kết quả trả về
+            
+        Returns:
+            Danh sách đường dẫn ảnh và độ tương đồng
+        """
+        # Tiền xử lý ảnh query
+        preprocessed_img = self.preprocess_image(query_image)
+        
+        # Trích xuất đặc trưng
+        query_features = self.extract_features(preprocessed_img)
+        
+        # Tính độ tương đồng với tất cả ảnh trong CSDL
+        similarities = []
+        
+        for i, features in enumerate(self.face_features_db):
+            # Tính khoảng cách cosine
+            similarity = self.cosine_similarity(query_features, features)
+            # min_len = min(len(query_features), len(features))
+            # similarity = self.cosine_similarity(query_features[:min_len], features[:min_len])
+            similarities.append((similarity, self.images_paths[i]))
+        
+        # Sắp xếp theo độ tương đồng giảm dần
+        similarities.sort(reverse=True)
+        
+        # Trả về top_k kết quả
+        return similarities[:top_k]
+    
+    def cosine_similarity(self, a, b):
+        """
+        Tính độ tương đồng cosine giữa hai vector
+        
+        Args:
+            a, b: Hai vector đặc trưng
+            
+        Returns:
+            Độ tương đồng cosine
+        """
+        dot_product = np.dot(a, b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        
+        if norm_a == 0 or norm_b == 0:
+            return 0
+        
+        return dot_product / (norm_a * norm_b)
+    
+    def chi_square_distance(self, a, b):
+        """
+        Tính khoảng cách chi-square giữa hai vector
+        
+        Args:
+            a, b: Hai vector đặc trưng
+            
+        Returns:
+            Khoảng cách chi-square
+        """
+        # Tránh chia cho 0
+        sum_ab = a + b
+        valid_indices = sum_ab != 0
+        
+        # Tính khoảng cách chỉ trên các phần tử hợp lệ
+        distance = np.sum(((a[valid_indices] - b[valid_indices]) ** 2) / sum_ab[valid_indices])
+        
+        return distance
+    
+    def euclidean_distance(self, a, b):
+        """
+        Tính khoảng cách Euclid giữa hai vector
+        
+        Args:
+            a, b: Hai vector đặc trưng
+            
+        Returns:
+            Khoảng cách Euclid
+        """
+        return np.sqrt(np.sum((a - b) ** 2))
+    
+    def display_results(self, query_image, similar_images):
+        """
+        Hiển thị kết quả tìm kiếm
+        
+        Args:
+            query_image: Ảnh truy vấn
+            similar_images: Danh sách (độ tương đồng, đường dẫn ảnh)
+        """
+        # Tạo figure với 2 hàng, 2 cột
+        plt.figure(figsize=(12, 10))
+        
+        # Hiển thị ảnh truy vấn
+        plt.subplot(2, 2, 1)
+        query_img_rgb = cv2.cvtColor(query_image, cv2.COLOR_BGR2RGB)
+        plt.imshow(query_img_rgb)
+        plt.title('Ảnh truy vấn')
+        plt.axis('off')
+        
+        # Hiển thị các ảnh tương tự
+        for i, (similarity, img_path) in enumerate(similar_images):
+            plt.subplot(2, 2, i+2)
+            similar_img = cv2.imread(img_path)
+            similar_img_rgb = cv2.cvtColor(similar_img, cv2.COLOR_BGR2RGB)
+            plt.imshow(similar_img_rgb)
+            plt.title(f'Tương tự #{i+1}, Độ tương đồng: {similarity:.4f}')
+            plt.axis('off')
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def create_gui(self):
+        """Tạo giao diện người dùng đơn giản với Tkinter"""
+        self.root = tk.Tk()
+        self.root.title("Hệ thống nhận dạng khuôn mặt người cao tuổi")
+        self.root.geometry("800x600")
+        
+        # Frame để chứa các thành phần
+        frame = tk.Frame(self.root)
+        frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Label hướng dẫn
+        tk.Label(frame, text="Hệ thống tìm kiếm ảnh mặt người cao tuổi", font=("Arial", 16)).pack(pady=10)
+        tk.Label(frame, text="Chọn ảnh để tìm kiếm các khuôn mặt tương tự", font=("Arial", 12)).pack(pady=5)
+        
+        # Button để chọn ảnh
+        self.select_button = Button(frame, text="Chọn ảnh", command=self.select_image)
+        self.select_button.pack(pady=10)
+        
+        # Frame để hiển thị ảnh đầu vào
+        self.input_frame = tk.Frame(frame)
+        self.input_frame.pack(pady=10)
+        
+        tk.Label(self.input_frame, text="Ảnh đầu vào:").pack()
+        self.input_image_label = Label(self.input_frame)
+        self.input_image_label.pack()
+        
+        # Button để tìm kiếm
+        self.search_button = Button(frame, text="Tìm kiếm ảnh tương tự", command=self.search_button_click)
+        self.search_button.pack(pady=10)
+        self.search_button["state"] = "disabled"
+        
+        # Frame để hiển thị kết quả
+        self.results_frame = tk.Frame(frame)
+        self.results_frame.pack(pady=10, fill=tk.X)
+        
+        tk.Label(self.results_frame, text="Kết quả tìm kiếm:").pack()
+        
+        # Frame để chứa 3 ảnh kết quả
+        self.result_images_frame = tk.Frame(self.results_frame)
+        self.result_images_frame.pack()
+        
+        # Labels để hiển thị ảnh kết quả
+        self.result_labels = []
+        self.result_similarity_labels = []
+        
+        for i in range(3):
+            result_frame = tk.Frame(self.result_images_frame)
+            result_frame.pack(side=tk.LEFT, padx=10)
+            
+            result_label = Label(result_frame)
+            result_label.pack()
+            self.result_labels.append(result_label)
+            
+            similarity_label = Label(result_frame, text="")
+            similarity_label.pack()
+            self.result_similarity_labels.append(similarity_label)
+        
+        # Biến để lưu trữ ảnh đầu vào hiện tại
+        self.current_input_image = None
+        
+        self.root.mainloop()
+    
+    def select_image(self):
+        """Hàm xử lý sự kiện khi người dùng chọn ảnh"""
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Image files", "*.jpg *.jpeg *.png")]
+        )
+        
+        if file_path:
+            # Đọc ảnh
+            self.current_input_image = cv2.imread(file_path)
+            
+            if self.current_input_image is not None:
+                # Hiển thị ảnh đầu vào
+                self.display_input_image()
+                
+                # Kích hoạt nút tìm kiếm
+                self.search_button["state"] = "normal"
+    
+    def display_input_image(self):
+        """Hiển thị ảnh đầu vào trên giao diện"""
+        if self.current_input_image is None:
+            return
+        
+        # Resize ảnh để hiển thị
+        h, w = self.current_input_image.shape[:2]
+        max_size = 200
+        scale = min(max_size/h, max_size/w)
+        display_img = cv2.resize(self.current_input_image, (int(w*scale), int(h*scale)))
+        
+        # Chuyển đổi sang định dạng để hiển thị trên Tkinter
+        display_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(display_img)
+        img_tk = ImageTk.PhotoImage(image=img)
+        
+        # Lưu trữ tham chiếu để tránh bị thu hồi bởi garbage collector
+        self.input_image_label.image = img_tk
+        self.input_image_label.configure(image=img_tk)
+    
+    def search_button_click(self):
+        """Hàm xử lý sự kiện khi người dùng nhấn nút tìm kiếm"""
+        if self.current_input_image is None:
+            return
+        
+        # Tìm kiếm ảnh tương tự
+        similar_images = self.search_similar_faces(self.current_input_image)
+        
+        # Hiển thị kết quả
+        self.display_result_images(similar_images)
+    
+    def display_result_images(self, similar_images):
+        """Hiển thị các ảnh kết quả tìm kiếm trên giao diện"""
+        # Xóa các ảnh kết quả cũ
+        for label in self.result_labels:
+            label.configure(image=None)
+        
+        for label, similarity_label, (similarity, img_path) in zip(self.result_labels, self.result_similarity_labels, similar_images):
+            # Đọc ảnh kết quả
+            result_img = cv2.imread(img_path)
+            
+            if result_img is not None:
+                # Resize ảnh để hiển thị
+                h, w = result_img.shape[:2]
+                max_size = 150
+                scale = min(max_size/h, max_size/w)
+                display_img = cv2.resize(result_img, (int(w*scale), int(h*scale)))
+                
+                # Chuyển đổi sang định dạng để hiển thị trên Tkinter
+                display_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(display_img)
+                img_tk = ImageTk.PhotoImage(image=img)
+                
+                # Lưu trữ tham chiếu để tránh bị thu hồi bởi garbage collector
+                label.image = img_tk
+                label.configure(image=img_tk)
+                
+                # Hiển thị độ tương đồng
+                similarity_label.configure(text=f"Độ tương đồng: {similarity:.4f}")
+
+
+# Đánh giá hệ thống
+def evaluate_system(system, test_images_dir):
+    """
+    Đánh giá hiệu suất của hệ thống nhận dạng khuôn mặt người cao tuổi
+    
+    Args:
+        system: Hệ thống nhận dạng
+        test_images_dir: Thư mục chứa ảnh kiểm thử
+    """
+    # Danh sách ảnh kiểm thử
+    test_images = []
+    for root, _, files in os.walk(test_images_dir):
+        for file in files:
+            if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                test_images.append(os.path.join(root, file))
+    
+    if not test_images:
+        print("Không tìm thấy ảnh kiểm thử")
+        return
+    
+    print(f"Đánh giá trên {len(test_images)} ảnh kiểm thử")
+    
+    # Các chỉ số đánh giá
+    avg_time = 0
+    
+    for img_path in test_images:
+        # Đọc ảnh
+        img = cv2.imread(img_path)
+        if img is None:
+            continue
+        
+        # Đo thời gian tìm kiếm
+        start_time = time.time()
+        similar_images = system.search_similar_faces(img)
+        end_time = time.time()
+        
+        # Cập nhật thời gian trung bình
+        avg_time += (end_time - start_time)
+    
+    # Tính thời gian trung bình
+    avg_time /= len(test_images)
+    
+    print(f"Thời gian tìm kiếm trung bình: {avg_time:.4f} giây")
+
+
+# Demo chính
+def main():
+    # Khởi tạo hệ thống
+    system = ElderlyFaceRecognitionSystem(data_dir='elderly_faces_dataset')
+    
+    # Chọn chế độ demo
+    print("Chọn chế độ demo:")
+    print("1. Demo với giao diện đồ họa")
+    print("2. Demo với đánh giá hiệu suất")
+    
+    choice = input("Nhập lựa chọn của bạn (1/2): ")
+    
+    if choice == '1':
+        # Demo với giao diện đồ họa
+        system.create_gui()
+    elif choice == '2':
+        # Demo với đánh giá hiệu suất
+        test_dir = input("Nhập đường dẫn đến thư mục ảnh kiểm thử: ")
+        evaluate_system(system, test_dir)
+    else:
+        print("Lựa chọn không hợp lệ")
+
+if __name__ == "__main__":
+    main()

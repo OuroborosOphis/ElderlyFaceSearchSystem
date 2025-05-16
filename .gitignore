@@ -1,0 +1,4 @@
+venv
+elderly_faces.db
+face_features.json
+sql.py
