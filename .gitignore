@@ -1,4 +1,4 @@
 venv
-elderly_faces.db
+bin/
 face_features.json
-sql.py
+face_features_shape.json
