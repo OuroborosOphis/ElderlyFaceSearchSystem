@@ -15,5 +15,5 @@ pip install -r requirements.txt
 
 ## Chạy demo
 ```bash 
-python main-v3.py 
+python main.py 
 ```
