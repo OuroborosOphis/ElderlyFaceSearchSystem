@@ -67,7 +67,7 @@ class ElderlyFaceSearchSystem:
         features_list = [features.tolist() for features in self.face_features_db]
         
         data = {
-            'version': '2.0',  # Phiên bản mới phù hợp với báo cáo
+            'version': '2.0',
             'features': features_list,
             'image_paths': self.images_paths
         }
@@ -80,7 +80,7 @@ class ElderlyFaceSearchSystem:
     def load_database(self):
         """
         Giai đoạn 1: Thu thập, xử lý, trích xuất đặc trưng và lưu trữ ảnh
-        Thực hiện các bước 1-4 như mô tả trong báo cáo
+        Thực hiện các bước 1-4 
         """
         print("Đang tải dữ liệu và trích xuất đặc trưng...")
         
@@ -138,7 +138,7 @@ class ElderlyFaceSearchSystem:
         # Chuyển sang ảnh xám để phát hiện khuôn mặt
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # Sử dụng Cascade Classifier để detect khuôn mặt như trong báo cáo
+        # Sử dụng Cascade Classifier để detect khuôn mặt 
         face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         faces = face_cascade.detectMultiScale(gray, 1.3, 5)
         
@@ -168,6 +168,10 @@ class ElderlyFaceSearchSystem:
         
         # Trích xuất đặc trưng HOG
         hog_features = self.extract_hog_features_manual(gray)
+        
+        # In thông tin về độ dài vector
+        # print(f"Độ dài vector LBP: {len(lbp_features)}")
+        # print(f"Độ dài vector HOG: {len(hog_features)}")
         
         # Kết hợp hai đặc trưng
         combined_features = np.concatenate((lbp_features, hog_features))
@@ -388,7 +392,7 @@ class ElderlyFaceSearchSystem:
         distances = []
         
         for i, features in enumerate(self.face_features_db):
-            # Sử dụng khoảng cách Euclidean như mô tả trong báo cáo
+            # Sử dụng khoảng cách Euclidean
             distance = self.euclidean_distance(query_features, features)
             distances.append((distance, self.images_paths[i]))
         
@@ -400,7 +404,7 @@ class ElderlyFaceSearchSystem:
     
     def euclidean_distance(self, a, b):
         """
-        Tính khoảng cách Euclidean như công thức trong báo cáo
+        Tính khoảng cách Euclidean 
         √(Σ(ai - bi)²)
         """
         return np.sqrt(np.sum((a - b) ** 2))
